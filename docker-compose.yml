@@ -1,0 +1,33 @@
+# Production-style deployment on a server: PostgreSQL + Django (gunicorn).
+#   cp .env.example .env   # set DJANGO_SECRET_KEY, POSTGRES_PASSWORD, DJANGO_ALLOWED_HOSTS
+#   docker compose up -d
+#   docker compose exec backend python manage.py createsuperuser
+# Put HTTPS in front (nginx / load balancer) for use outside the office network.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-proglint_pulse}
+      POSTGRES_USER: ${POSTGRES_USER:-proglint}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-proglint} -d ${POSTGRES_DB:-proglint_pulse}"]
+      interval: 5s
+      retries: 10
+  backend:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pgdata:
