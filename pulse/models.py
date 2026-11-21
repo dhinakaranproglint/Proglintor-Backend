@@ -431,3 +431,87 @@ class SoftwareEvent(models.Model):
 
     def to_dict(self):
         return {"at": ms(self.at), "actor": self.actor, "kind": self.kind, "detail": self.detail}
+
+
+# ---- Orbit: tasks, recognitions ---------------------------------------------------------------------
+
+class Task(models.Model):
+    """A piece of work an admin assigned to one laptop's employee. Assigning to several people creates one row each (sharing `group`),
+    so every query is naturally scoped to one employee."""
+    PRIORITIES = [("low", "Low"), ("medium", "Medium"), ("high", "High"), ("urgent", "Urgent")]
+    STATUSES = [("todo", "To do"), ("in_progress", "In progress"), ("blocked", "Blocked"), ("done", "Done")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    group = models.UUIDField(default=uuid.uuid4, db_index=True)
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="tasks")
+    title = models.CharField(max_length=160)
+    description = models.CharField(max_length=1000, blank=True)
+    priority = models.CharField(max_length=10, choices=PRIORITIES, default="medium")
+    status = models.CharField(max_length=12, choices=STATUSES, default="todo", db_index=True)
+    percent = models.PositiveSmallIntegerField(default=0)
+    estimated_hours = models.FloatField(default=0)
+    due_date = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["due_date", "-created_at"]
+
+    def __str__(self):
+        return f"{self.title} ({self.asset_id})"
+
+    def to_dict(self, admin=False):
+        out = {
+            "id": str(self.id), "group": str(self.group), "title": self.title, "description": self.description,
+            "priority": self.priority, "status": self.status, "percent": self.percent, "estimatedHours": self.estimated_hours,
+            "dueDate": self.due_date.isoformat() if self.due_date else None, "createdAt": ms(self.created_at),
+            "completedAt": ms(self.completed_at),
+        }
+        if admin:
+            out.update({"assetId": self.asset_id, "employeeName": self.asset.employee_name,
+                        "createdBy": self.created_by.get_username() if self.created_by_id else None})
+        return out
+
+
+class Recognition(models.Model):
+    """Appreciation for good work. Orbit (or the employee, or an admin) proposes it; an admin approves it, gives a reward and credits;
+    the employee then gets a certificate. Nothing is awarded without an admin's decision."""
+    KINDS = [("delivery", "Delivery"), ("early", "Delivered early"), ("weekend", "Weekend / extra hours"), ("focus", "Focus"),
+             ("extra", "Extra effort"), ("kudos", "Kudos")]
+    SOURCES = [("orbit", "Orbit"), ("employee", "Employee"), ("admin", "Admin")]
+    STATUSES = [("pending", "Pending"), ("approved", "Approved"), ("rejected", "Not this time")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="recognitions")
+    kind = models.CharField(max_length=12, choices=KINDS)
+    source = models.CharField(max_length=10, choices=SOURCES, default="orbit")
+    title = models.CharField(max_length=120)
+    citation = models.CharField(max_length=600, blank=True)
+    evidence = models.JSONField(default=dict, blank=True)  # numbers computed by the server, shown to the admin as proof
+    dedupe_key = models.CharField(max_length=80, blank=True)  # the same achievement can't be nominated twice
+    status = models.CharField(max_length=10, choices=STATUSES, default="pending", db_index=True)
+    credits = models.FloatField(default=0)
+    reward = models.CharField(max_length=200, blank=True)
+    admin_note = models.CharField(max_length=500, blank=True)
+    certificate_id = models.CharField(max_length=24, blank=True)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["asset", "dedupe_key"], condition=~models.Q(dedupe_key=""), name="recognition_once_per_achievement")]
+
+    def to_dict(self, admin=False):
+        out = {
+            "id": str(self.id), "kind": self.kind, "source": self.source, "title": self.title, "citation": self.citation,
+            "evidence": self.evidence, "status": self.status, "credits": self.credits, "reward": self.reward,
+            "adminNote": self.admin_note, "certificateId": self.certificate_id,
+            "createdAt": ms(self.created_at), "decidedAt": ms(self.decided_at),
+        }
+        if admin:
+            out.update({"assetId": self.asset_id, "employeeName": self.asset.employee_name, "department": self.asset.department,
+                        "decidedBy": self.decided_by.get_username() if self.decided_by_id else None})
+        return out

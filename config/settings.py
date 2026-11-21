@@ -190,6 +190,22 @@ GEMINI_MODEL = env("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_TIMEOUT_SECONDS = min(int(env("GEMINI_TIMEOUT_SECONDS", "12")), 12)  # a slow model must not stall the chat
 GEMINI_MAX_OUTPUT_TOKENS = int(env("GEMINI_MAX_OUTPUT_TOKENS", "400"))
 ASSIST_PER_10MIN = int(env("ASSIST_PER_10MIN", "30"))  # model calls per laptop
+
+# ---- Orbit: the personal work companion ----------------------------------------------------------------
+#   ORBIT_ENABLED=0                    switch the whole companion off (the install assistant keeps working).
+#   ORBIT_WORK_SOURCE=live|simulated|off|auto   where meetings / commits / pull requests come from. "auto" (default): live when Azure DevOps or
+#                                      Microsoft Graph credentials are set, demo data only when DEBUG is on, otherwise nothing is shown.
+#   ORBIT_CHAT_PER_10MIN               chat messages per laptop (each one may call the model).
+ORBIT_ENABLED = env_bool("ORBIT_ENABLED", True)
+ORBIT_WORK_SOURCE = env("ORBIT_WORK_SOURCE", "auto").lower()
+ORBIT_CHAT_PER_10MIN = int(env("ORBIT_CHAT_PER_10MIN", "30"))
+ORBIT_TIMEOUT_SECONDS = int(env("ORBIT_TIMEOUT_SECONDS", "20"))
+ADO_ORG_URL = env("ADO_ORG_URL", "").rstrip("/")
+ADO_PROJECT = env("ADO_PROJECT", "")
+ADO_PAT = env("ADO_PAT", "")
+AZURE_TENANT_ID = env("AZURE_TENANT_ID", "")
+AZURE_CLIENT_ID = env("AZURE_CLIENT_ID", "")
+AZURE_CLIENT_SECRET = env("AZURE_CLIENT_SECRET", "")
 PROPOSALS_PER_DAY = int(env("PROPOSALS_PER_DAY", "10"))  # "find this app for me" web lookups per laptop
 # Address shown to admins for connecting agents (defaults to the URL the admin app uses).
 PULSE_PUBLIC_URL = env("PULSE_PUBLIC_URL", "")

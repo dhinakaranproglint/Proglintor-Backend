@@ -41,6 +41,29 @@ Agents and the admin app then use `http://<server>:8000`, or `https://pulse.prog
   `ASSISTANT_WEB_LOOKUP_ENABLED=0`. The catalogue install flow does not use it.
 - Back up PostgreSQL; the audit trail (`SoftwareEvent`) and application log (`pulse.software`) record every install decision.
 
+## Orbit: the employee's work companion
+Orbit greets each employee by the time of day when they open their laptop, then acts like a friendly senior colleague: it knows their
+assigned **tasks**, **workload** (open hours against available hours), **app activity**, **achievements** and **appreciation**, and answers
+questions about them. When someone does good work (finishes tasks early, works a weekend, keeps a focus streak, or tells Orbit about extra
+effort), Orbit proposes appreciation; **only an admin can approve it**, choose a reward and credits, and the employee then gets a certificate.
+- Facts (hours, counts, streaks, credits) are computed by code; the model only phrases and advises. Chat tools are read-only and closed over
+  one employee. Installs and awards are never decided by the model.
+- Employee API `/api/agent/orbit/*`; admin API `/api/admin/orbit/*` (tasks, recognition decisions, team workload, analyst chat).
+- Meetings, commits and PRs come from `ORBIT_WORK_SOURCE` (live Azure DevOps + Microsoft Graph, demo data, or off). Live connectors are read-only
+  and fail soft; they have not been verified against a real tenant yet.
+- Privacy: the chat sends the employee's message (emails, numbers and secrets redacted) plus the data the tools return (task titles, hours,
+  achievements) to Google Gemini. Get sign-off first, use a paid tier, or switch it off with `ORBIT_ENABLED=0` / `ASSISTANT_CHAT_ENABLED=0`.
+
+### Mock data (development and demos)
+```bash
+.venv/bin/python manage.py seed_mock_data                 # 8 people, 30 days: app usage, tasks, appreciation, weekend work
+.venv/bin/python manage.py seed_mock_data --asset PAP001  # mock TASKS and appreciation for a real laptop (its app usage is never faked)
+.venv/bin/python manage.py seed_mock_data --remove        # removes only the mock people (ids MOCK001..)
+```
+History always ends today, and today is only as full as the working day so far, so re-running keeps it looking live. It is deterministic per
+person and day, safe to re-run, and never fakes a real laptop's app usage. Only tasks and meetings may be demo data (`ORBIT_WORK_SOURCE=simulated`
+gives demo meetings, labelled "demo data"); commits and pull requests are never simulated. Real Azure DevOps and Graph replace it later by setting their credentials.
+
 ## Moving data from the earlier desktop-only admin
 ```bash
 .venv/bin/python manage.py import_desktop_admin "~/Library/Application Support/Proglintor Admin/pulse-admin.db"

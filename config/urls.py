@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path
 
-from pulse import admin_api, agent_api, auth_api, software_api
+from pulse import admin_api, agent_api, auth_api, orbit_api, software_api
 
 admin.site.site_header = "Proglintor"
 admin.site.site_title = "Proglintor"
@@ -18,6 +18,15 @@ urlpatterns = [
     path("api/agent/icons/missing", agent_api.IconsMissingView.as_view()),
     path("api/agent/icons", agent_api.IconsUploadView.as_view()),
     # Software install chat (employee side)
+    path("api/agent/orbit/briefing", orbit_api.BriefingView.as_view()),
+    path("api/agent/orbit/wrapup", orbit_api.WrapupView.as_view()),
+    path("api/agent/orbit/chat", orbit_api.ChatView.as_view()),
+    path("api/agent/orbit/tasks", orbit_api.TaskListView.as_view()),
+    path("api/agent/orbit/tasks/<uuid:task_id>", orbit_api.TaskDetailView.as_view()),
+    path("api/agent/orbit/achievements", orbit_api.AchievementsView.as_view()),
+    path("api/agent/orbit/recognitions", orbit_api.RecognitionListView.as_view()),
+    path("api/agent/orbit/recognitions/<uuid:rec_id>/certificate", orbit_api.CertificateView.as_view()),
+    path("api/agent/orbit/pulse", orbit_api.PulseView.as_view()),
     path("api/agent/software/catalogue", software_api.CatalogueView.as_view()),
     path("api/agent/software/preview", software_api.PreviewView.as_view()),
     path("api/agent/software/assist", software_api.AssistView.as_view()),
@@ -48,6 +57,13 @@ urlpatterns = [
     path("api/admin/software/requests/<uuid:request_id>", software_api.RequestAdminDetailView.as_view()),
     path("api/admin/software/requests/<uuid:request_id>/decision", software_api.DecisionView.as_view()),
     path("api/admin/software/requests/<uuid:request_id>/approve-new", software_api.ApproveNewView.as_view()),
+    path("api/admin/orbit/tasks", orbit_api.TaskAdminListView.as_view()),
+    path("api/admin/orbit/tasks/<uuid:task_id>", orbit_api.TaskAdminDetailView.as_view()),
+    path("api/admin/orbit/recognitions", orbit_api.RecognitionAdminListView.as_view()),
+    path("api/admin/orbit/recognitions/<uuid:rec_id>/decision", orbit_api.RecognitionDecisionView.as_view()),
+    path("api/admin/orbit/recognitions/<uuid:rec_id>/certificate", orbit_api.RecognitionCertificateView.as_view()),
+    path("api/admin/orbit/team", orbit_api.TeamView.as_view()),
+    path("api/admin/orbit/chat", orbit_api.AdminChatView.as_view()),
     path("api/admin/policy", admin_api.PolicyView.as_view()),
     path("api/admin/icons", admin_api.IconsView.as_view()),
     path("api/admin/export.csv", admin_api.ExportView.as_view()),
