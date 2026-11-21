@@ -15,8 +15,9 @@ from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, ms
+from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, SoftwareRequest, WeekendAlert, ms
 from .policy import DEFAULT_POLICY, normalize_policy
+from .software import close_open_requests
 
 ASSET_ID_RE = re.compile(r"^[A-Za-z0-9._-]{2,40}$")
 DEVICE_TYPES = {"Laptop", "Desktop", "Workstation", "Other"}
@@ -122,6 +123,7 @@ class DashboardView(APIView):
                 "online": sum(1 for a in assets if a["online"]),
                 "activeToday": sum(a["todaySeconds"] for a in assets),
                 "newAlerts": WeekendAlert.objects.filter(status=WeekendAlert.STATUS_NEW).count(),
+                "pendingApprovals": SoftwareRequest.objects.filter(status="AWAITING_APPROVAL").count(),
             },
             "assets": assets,
             "topApps": app_totals(timezone.localdate(), timezone.localdate())[:8],
@@ -189,6 +191,7 @@ class AssetResetCodeView(APIView):
         asset = get_object_or_404(Asset, asset_id=asset_id)
         asset.issue_code()
         asset.save()
+        close_open_requests(asset, f"admin:{request.user.get_username()}")  # nothing waiting may follow the asset to its next laptop
         return Response(asset.to_dict())
 
 

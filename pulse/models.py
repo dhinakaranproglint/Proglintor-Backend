@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -41,6 +42,8 @@ class Asset(models.Model):
     hostname = models.CharField(max_length=255, blank=True)
     os = models.CharField(max_length=120, blank=True)
     platform = models.CharField(max_length=20, blank=True)
+    arch = models.CharField(max_length=20, blank=True)
+    local_admin = models.BooleanField(null=True, blank=True)  # is the laptop's signed-in user a local administrator? None = unknown
     agent_version = models.CharField(max_length=40, blank=True)
 
     last_seen = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -124,6 +127,8 @@ class Asset(models.Model):
             "hostname": self.hostname,
             "os": self.os,
             "platform": self.platform,
+            "arch": self.arch,
+            "localAdmin": self.local_admin,
             "agentVersion": self.agent_version,
             "lastSeen": ms(self.last_seen),
             "online": online,
@@ -263,3 +268,166 @@ class AppIcon(models.Model):
     def data_url(self):
         import base64
         return f"data:{self.content_type};base64,{base64.b64encode(bytes(self.data)).decode()}"
+
+
+# ---- software catalogue & install requests ---------------------------------------------------
+
+REQUEST_ACTIVE = ("QUEUED", "DISPATCHED", "RUNNING", "VERIFYING")
+REQUEST_OPEN = ("AWAITING_APPROVAL",) + REQUEST_ACTIVE
+
+
+class SoftwareItem(models.Model):
+    """One approved, pinned installer in the company catalogue (one row per platform build)."""
+
+    PLATFORMS = [("darwin", "macOS"), ("win32", "Windows"), ("linux", "Linux")]
+    ARCHS = [("any", "Any"), ("arm64", "Apple Silicon / ARM64"), ("x64", "Intel / x64")]
+    INSTALLERS = [("dmg", "dmg"), ("zip", "zip"), ("pkg", "pkg"), ("msi", "msi"), ("exe", "exe"), ("appimage", "AppImage")]
+
+    slug = models.CharField(primary_key=True, max_length=60)
+    name = models.CharField(max_length=120)
+    publisher = models.CharField(max_length=120, blank=True)
+    version = models.CharField(max_length=40)
+    description = models.CharField(max_length=300, blank=True)
+    aliases = models.JSONField(default=list, blank=True)
+    platform = models.CharField(max_length=10, choices=PLATFORMS)
+    arch = models.CharField(max_length=10, choices=ARCHS, default="any")
+    installer_type = models.CharField(max_length=10, choices=INSTALLERS)
+    download_url = models.URLField(max_length=1000)
+    sha256 = models.CharField(max_length=64)
+    size_bytes = models.BigIntegerField(null=True, blank=True)
+    app_id = models.CharField("bundle id / display name", max_length=255, blank=True)
+    app_name = models.CharField("app bundle name (e.g. Foo.app)", max_length=255, blank=True)
+    team_id = models.CharField("Apple Team ID", max_length=20, blank=True)
+    silent_args = models.JSONField(default=list, blank=True)
+    icon = models.TextField(blank=True)  # small PNG data URL read from the app bundle when the entry was checked
+    requires_approval = models.BooleanField(default=True)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "platform"]
+
+    def __str__(self):
+        return f"{self.name} {self.version} ({self.platform})"
+
+    def spec(self):
+        """The exact, pinned install instructions copied into a request (what the approver reviewed)."""
+        return {
+            "slug": self.slug, "name": self.name, "version": self.version, "publisher": self.publisher,
+            "platform": self.platform, "arch": self.arch, "installerType": self.installer_type,
+            "downloadUrl": self.download_url, "sha256": self.sha256, "sizeBytes": self.size_bytes,
+            "appId": self.app_id, "appName": self.app_name, "teamId": self.team_id, "silentArgs": list(self.silent_args or []),
+        }
+
+    def to_dict(self, with_icon=False):
+        """Admin view. The icon (up to ~100 KB) is left out of lists: they say `hasIcon` and the client fetches icons it doesn't have
+        yet from /api/admin/software/icons, keyed by slug + updatedAt."""
+        return {
+            "slug": self.slug, "name": self.name, "publisher": self.publisher, "version": self.version,
+            "description": self.description, "aliases": self.aliases or [], "platform": self.platform, "arch": self.arch,
+            "installerType": self.installer_type, "downloadUrl": self.download_url, "sha256": self.sha256,
+            "sizeBytes": self.size_bytes, "appId": self.app_id, "appName": self.app_name, "teamId": self.team_id,
+            "silentArgs": self.silent_args or [], "requiresApproval": self.requires_approval, "enabled": self.enabled,
+            "hasIcon": bool(self.icon), **({"icon": self.icon or None} if with_icon else {}), "updatedAt": ms(self.updated_at),
+        }
+
+    def to_public(self):
+        """What an employee's device may see (no download URL or digest)."""
+        return {
+            "slug": self.slug, "name": self.name, "publisher": self.publisher, "version": self.version,
+            "description": self.description, "requiresApproval": self.requires_approval,
+        }
+
+
+class SoftwareRequest(models.Model):
+    """An employee's request to install something on their asset, from chat to verified install."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="software_requests")
+    idempotency_key = models.CharField(max_length=64)
+    raw_request = models.CharField(max_length=500)
+    software = models.ForeignKey(SoftwareItem, null=True, blank=True, on_delete=models.SET_NULL, related_name="requests")
+    software_name = models.CharField(max_length=120, blank=True)
+    version = models.CharField(max_length=40, blank=True)
+    spec = models.JSONField(default=dict, blank=True)  # pinned at request time
+    kind = models.CharField(max_length=10, default="catalogue")  # "new" = software not in the catalogue yet (see proposals.py)
+    proposal = models.JSONField(default=dict, blank=True)  # AI-suggested source + licence + pre-checks, for the admin to review
+
+    status = models.CharField(max_length=30, db_index=True)
+    decision_reason = models.CharField(max_length=60, blank=True)
+    explanation = models.CharField(max_length=600, blank=True)
+    request_version = models.PositiveIntegerField(default=1)  # optimistic concurrency for approvals / cancel
+
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_comment = models.CharField(max_length=500, blank=True)
+
+    progress_phase = models.CharField(max_length=20, blank=True)
+    progress_bytes_done = models.BigIntegerField(null=True, blank=True)
+    progress_bytes_total = models.BigIntegerField(null=True, blank=True)
+    progress_updated_at = models.DateTimeField(null=True, blank=True)
+    job_claimed_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["asset", "idempotency_key"], name="software_request_idem")]
+
+    def __str__(self):
+        return f"{self.asset_id} {self.software_name or self.raw_request} {self.status}"
+
+    def to_dict(self, replayed=False):
+        """Shape sent to the employee's agent."""
+        return {
+            "id": str(self.id), "status": self.status, "decisionReason": self.decision_reason or None,
+            "rawRequest": self.raw_request, "softwareSlug": self.software_id, "softwareName": self.software_name or None,
+            "version": self.version or None, "explanation": self.explanation or None, "requestVersion": self.request_version,
+            "replayed": replayed, "createdAt": ms(self.created_at), "updatedAt": ms(self.updated_at),
+            "decisionComment": self.decision_comment or None, "kind": self.kind,
+            "proposal": self.proposal_public() if self.kind == "new" else None,
+            "decidedBy": self.decided_by.get_full_name() or self.decided_by.get_username() if self.decided_by_id else None,
+            "progressPhase": self.progress_phase or None, "progressBytesDone": self.progress_bytes_done,
+            "progressBytesTotal": self.progress_bytes_total, "progressUpdatedAt": ms(self.progress_updated_at),
+            "jobClaimedAt": ms(self.job_claimed_at), "finishedAt": ms(self.finished_at),
+        }
+
+    def proposal_public(self):
+        """What the employee sees about a new-software proposal (no URLs: those are for the admin to check)."""
+        p = self.proposal or {}
+        return {"name": p.get("name"), "vendor": p.get("vendor"), "host": p.get("host"), "licenseKind": p.get("licenseKind"),
+                "licenseLabel": p.get("licenseLabel")}
+
+    def to_admin(self, icon=False):
+        """Admin view. `icon=True` (the pending-approvals list only) adds the app's icon; it needs `software` to be loaded with the row."""
+        a = self.asset
+        spec = self.spec or {}
+        return {
+            **self.to_dict(),
+            "assetId": a.asset_id, "employeeName": a.employee_name, "employeeEmail": a.employee_email,
+            "department": a.department, "hostname": a.hostname, "deviceOnline": a.online,
+            "publisher": spec.get("publisher", ""), "installerType": spec.get("installerType", ""),
+            "sha256Prefix": (spec.get("sha256") or "")[:12], "sizeBytes": spec.get("sizeBytes"),
+            **({"icon": (self.software.icon or None) if self.software_id else None} if icon else {}),
+            "assetPlatform": a.platform, "assetArch": a.arch, "assetLocalAdmin": a.local_admin,
+            "proposal": self.proposal if self.kind == "new" else None,
+        }
+
+
+class SoftwareEvent(models.Model):
+    """Append-only audit trail: who asked, who approved, what ran."""
+
+    request = models.ForeignKey(SoftwareRequest, on_delete=models.CASCADE, related_name="events")
+    at = models.DateTimeField(auto_now_add=True)
+    actor = models.CharField(max_length=160)  # "employee:PAP080", "admin:alice", "agent:PAP080", "system"
+    kind = models.CharField(max_length=40)
+    detail = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        ordering = ["at", "id"]
+
+    def to_dict(self):
+        return {"at": ms(self.at), "actor": self.actor, "kind": self.kind, "detail": self.detail}

@@ -12,7 +12,6 @@ import re
 import time
 from datetime import date, datetime, timezone as dt_timezone
 
-from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import authentication, exceptions, permissions
@@ -21,6 +20,8 @@ from rest_framework.views import APIView
 
 from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, hash_token
 from .policy import DEFAULT_POLICY, normalize_policy
+from .ratelimit import client_ip, hit
+from .software import queued_job_count
 
 DAY_RE = re.compile(r"^\d{4}-\d\d-\d\d$")
 ICON_RE = re.compile(r"^data:(image/png|image/svg\+xml|image/jpeg);base64,([A-Za-z0-9+/=]+)$")
@@ -75,15 +76,11 @@ class AgentView(APIView):
 
 
 def _client_ip(request):
-    return request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "")
+    return client_ip(request)
 
 
 def _rate_limited(key, limit=10, window=600):
-    now = time.time()
-    hits = [t for t in cache.get(key, []) if now - t < window]
-    hits.append(now)
-    cache.set(key, hits, window)
-    return len(hits) > limit
+    return hit(key, limit, window)
 
 
 class EnrollView(APIView):
@@ -103,6 +100,8 @@ class EnrollView(APIView):
             asset.hostname = clip(request.data.get("hostname"), 255)
             asset.os = clip(request.data.get("os"), 120)
             asset.platform = clip(request.data.get("platform"), 20)
+            asset.arch = clip(request.data.get("arch"), 20)
+            asset.local_admin = request.data.get("localAdmin") if isinstance(request.data.get("localAdmin"), bool) else None
             asset.agent_version = clip(request.data.get("agentVersion"), 40)
             asset.save()
         return Response({"token": token, "asset": asset.public(), "policy": current_policy()})
@@ -124,11 +123,14 @@ class HeartbeatView(AgentView):
             asset.today_seconds = max(0.0, float(d.get("todaySeconds") or 0))
         except (TypeError, ValueError):
             asset.today_seconds = 0
-        for field, key, n in (("hostname", "hostname", 255), ("os", "os", 120), ("platform", "platform", 20), ("agent_version", "agentVersion", 40)):
+        for field, key, n in (("hostname", "hostname", 255), ("os", "os", 120), ("platform", "platform", 20), ("arch", "arch", 20), ("agent_version", "agentVersion", 40)):
             if d.get(key):
                 setattr(asset, field, clip(d.get(key), n))
+        if isinstance(d.get("localAdmin"), bool):
+            asset.local_admin = d["localAdmin"]
         asset.save()
-        return Response({"policy": current_policy(), "asset": asset.public(), "serverTime": int(time.time() * 1000)})
+        return Response({"policy": current_policy(), "asset": asset.public(), "serverTime": int(time.time() * 1000),
+                         "softwareJobs": queued_job_count(asset)})
 
 
 class UsageView(AgentView):

@@ -32,6 +32,15 @@ docker compose exec backend python manage.py createsuperuser
 Agents and the admin app then use `http://<server>:8000`, or `https://pulse.proglint.com` behind an HTTPS proxy
 (set `DJANGO_BEHIND_PROXY=1`).
 
+### Production checklist
+- Set `PULSE_ENV=production`, `DJANGO_DEBUG=0`, a real `DJANGO_SECRET_KEY` and explicit `DJANGO_ALLOWED_HOSTS` (the server refuses to start otherwise).
+- Serve over HTTPS and set `DJANGO_BEHIND_PROXY=1` (secure cookies, HTTPS redirect, HSTS) and `PULSE_TRUSTED_PROXIES` to the number of proxies in front.
+- Use a cache shared by all workers (`CACHE_BACKEND=db` after `createcachetable`, which the Docker image runs, or `redis`). `manage.py check` warns if not.
+- Install assistant: the AI chat sends the employee's message text (with emails, numbers and secrets redacted) to Google Gemini. Get privacy/legal
+  sign-off first, use a paid Gemini tier (free-tier data may be used for training), or switch it off with `ASSISTANT_CHAT_ENABLED=0` /
+  `ASSISTANT_WEB_LOOKUP_ENABLED=0`. The catalogue install flow does not use it.
+- Back up PostgreSQL; the audit trail (`SoftwareEvent`) and application log (`pulse.software`) record every install decision.
+
 ## Moving data from the earlier desktop-only admin
 ```bash
 .venv/bin/python manage.py import_desktop_admin "~/Library/Application Support/Proglintor Admin/pulse-admin.db"
@@ -52,7 +61,33 @@ Agents and the admin app then use `http://<server>:8000`, or `https://pulse.prog
 | POST | `/api/admin/assets/<id>/reset-code` | staff | new enrollment code (disconnects the laptop) |
 | GET · PATCH | `/api/admin/alerts` · `/api/admin/alerts/<uid>` | staff | list / review + note |
 | GET/PUT | `/api/admin/policy` | staff | weekend policy |
+| GET · POST | `/api/admin/software/items` | staff | software catalogue (pinned installers) |
+| GET · PATCH · DELETE | `/api/admin/software/items/<slug>` | staff | edit / disable / remove (blocked while requests are open) |
+| GET | `/api/admin/software/approvals` | staff | install requests waiting for a decision |
+| POST | `/api/admin/software/requests/<id>/decision` | staff | `{decision: APPROVED\|REJECTED, comment, expectedVersion}` |
+| GET | `/api/admin/software/requests[/<id>]` | staff | request history; detail includes the audit trail |
+| GET | `/api/agent/software/catalogue` | agent | what this laptop may request (no URLs or digests) |
+| POST | `/api/agent/software/preview` | agent | “what would happen?” (nothing recorded) |
+| GET · POST | `/api/agent/software/requests` | agent | this laptop's requests · ask for an install (`idempotencyKey`) |
+| POST | `/api/agent/software/requests/<id>/cancel` | agent | cancel while waiting for approval / queued / a suggestion |
+| POST | `/api/agent/software/requests/<id>/confirm` | agent | “yes, ask IT to review this app” (software that isn't in the catalogue) |
+| POST | `/api/admin/software/requests/<id>/approve-new` | staff | `{item, expectedVersion, licenceConfirmed}`: add the admin-checked build to the catalogue and queue the install |
+| POST | `/api/agent/software/jobs/next` | agent | claim the next approved install (one at a time) |
+| POST | `/api/agent/software/jobs/<id>/progress` · `/result` | agent | phase + bytes · success or reason code |
 | GET | `/api/admin/export.csv` | staff | usage export |
+
+**Install requests** are matched deterministically against the catalogue (no model decides what gets installed), the installer's URL and SHA-256 are copied
+onto the request when it is made, and every step is written to an append-only audit trail. Limits and timeouts are env settings:
+`SOFTWARE_MAX_OPEN_PER_ASSET` (5), `SOFTWARE_SUBMITS_PER_10MIN` (20), `SOFTWARE_APPROVAL_TTL_HOURS` (168), `SOFTWARE_QUEUE_TTL_HOURS` (24), `SOFTWARE_STALE_MINUTES` (15).
+**Conversational assistant (optional, Google Gemini).** Set `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`, `GEMINI_TIMEOUT_SECONDS`, `ASSIST_PER_10MIN`) in `.env`. The model only chats and suggests:
+small talk gets a friendly answer, anything not about installing software gets a polite redirect to the IT Service Desk, and a misspelled or loosely described app gets "Did you mean *Slack*?".
+It never installs anything: a suggestion must exactly match an approved entry for that laptop, the employee has to answer "yes", and the request then goes through the normal approval and install flow.
+Only the typed message, a few recent chat lines and the approved software names are sent to the model (never names, e-mails, asset ids or hostnames), the key stays on the server, answers are cleaned (no links or markdown),
+and each laptop is limited to `ASSIST_PER_10MIN` calls. Without a key, or if the service is slow or down, the chat falls back to its built-in replies (close misspellings still get "Did you mean…?").
+**Software that isn't approved yet** (`pulse/proposals.py`): for a real app missing from the catalogue the model (with Google Search) proposes the vendor's official download page and a licence assessment; `PROPOSALS_PER_DAY` (10) limits these web lookups per laptop and answers are cached for an hour.
+The server only pre-checks the link (public https, every redirect re-validated against private networks, first 2 KB read to classify it, host vs vendor) and never downloads or runs anything; signature and checksum are verified by the admin app at review time.
+An employee-confirmed suggestion appears in Approvals as *New software*; it cannot be approved with the ordinary Approve button, only through `approve-new`, which creates the pinned catalogue entry and queues the install atomically (a wrong-platform build or a missing licence confirmation changes nothing).
+Run `python manage.py migrate` after updating (adds the software tables and `Asset.arch`).
 
 Only staff users (`is_staff`) can use the admin API. Agent tokens and enrollment codes are single-purpose: tokens
 are stored as SHA-256 hashes, codes work once, and repeated wrong codes are rate-limited.

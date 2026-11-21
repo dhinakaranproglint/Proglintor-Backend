@@ -9,13 +9,11 @@
 import hashlib
 import ipaddress
 import secrets
-import time
 from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
-from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
@@ -28,12 +26,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import PasswordResetCode
+from .ratelimit import client_ip, hit
 
 User = get_user_model()
 
 
 def _ip(request):
-    return request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "")
+    return client_ip(request)
 
 
 def _is_local(request):
@@ -47,11 +46,7 @@ def _is_local(request):
 
 
 def _limited(key, limit, window):
-    now = time.time()
-    hits = [t for t in cache.get(key, []) if now - t < window]
-    hits.append(now)
-    cache.set(key, hits, window)
-    return len(hits) > limit
+    return hit(key, limit, window)
 
 
 def _hash(code):

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path
 
-from pulse import admin_api, agent_api, auth_api
+from pulse import admin_api, agent_api, auth_api, software_api
 
 admin.site.site_header = "Proglintor"
 admin.site.site_title = "Proglintor"
@@ -17,6 +17,16 @@ urlpatterns = [
     path("api/agent/alerts", agent_api.AlertsView.as_view()),
     path("api/agent/icons/missing", agent_api.IconsMissingView.as_view()),
     path("api/agent/icons", agent_api.IconsUploadView.as_view()),
+    # Software install chat (employee side)
+    path("api/agent/software/catalogue", software_api.CatalogueView.as_view()),
+    path("api/agent/software/preview", software_api.PreviewView.as_view()),
+    path("api/agent/software/assist", software_api.AssistView.as_view()),
+    path("api/agent/software/requests", software_api.RequestListView.as_view()),
+    path("api/agent/software/requests/<uuid:request_id>/cancel", software_api.RequestCancelView.as_view()),
+    path("api/agent/software/requests/<uuid:request_id>/confirm", software_api.RequestConfirmView.as_view()),
+    path("api/agent/software/jobs/next", software_api.JobNextView.as_view()),
+    path("api/agent/software/jobs/<uuid:request_id>/progress", software_api.JobProgressView.as_view()),
+    path("api/agent/software/jobs/<uuid:request_id>/result", software_api.JobResultView.as_view()),
     # Admin desktop app
     path("api/admin/login", auth_api.LoginView.as_view()),
     path("api/admin/setup", auth_api.SetupView.as_view()),
@@ -30,6 +40,14 @@ urlpatterns = [
     path("api/admin/assets/<str:asset_id>/reset-code", admin_api.AssetResetCodeView.as_view()),
     path("api/admin/alerts", admin_api.AlertListView.as_view()),
     path("api/admin/alerts/<str:uid>", admin_api.AlertDetailView.as_view()),
+    path("api/admin/software/items", software_api.ItemListView.as_view()),
+    path("api/admin/software/icons", software_api.ItemIconsView.as_view()),
+    path("api/admin/software/items/<str:slug>", software_api.ItemDetailView.as_view()),
+    path("api/admin/software/approvals", software_api.ApprovalListView.as_view()),
+    path("api/admin/software/requests", software_api.RequestAdminListView.as_view()),
+    path("api/admin/software/requests/<uuid:request_id>", software_api.RequestAdminDetailView.as_view()),
+    path("api/admin/software/requests/<uuid:request_id>/decision", software_api.DecisionView.as_view()),
+    path("api/admin/software/requests/<uuid:request_id>/approve-new", software_api.ApproveNewView.as_view()),
     path("api/admin/policy", admin_api.PolicyView.as_view()),
     path("api/admin/icons", admin_api.IconsView.as_view()),
     path("api/admin/export.csv", admin_api.ExportView.as_view()),
