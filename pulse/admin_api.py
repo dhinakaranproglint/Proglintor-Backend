@@ -4,7 +4,6 @@ import io
 import re
 from datetime import datetime, time as dtime, timedelta
 
-from django.contrib.auth import authenticate
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db.models import Count, Max, Sum
@@ -16,7 +15,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, ms
+from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, ms
 from .policy import DEFAULT_POLICY, normalize_policy
 
 ASSET_ID_RE = re.compile(r"^[A-Za-z0-9._-]{2,40}$")
@@ -90,20 +89,6 @@ def clean_asset_fields(data, partial=False, existing=None):
 
 
 # ---- auth ------------------------------------------------------------------------------
-
-class LoginView(APIView):
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        user = authenticate(request, username=request.data.get("username", ""), password=request.data.get("password", ""))
-        if not user or not user.is_active:
-            return Response({"error": "Incorrect username or password"}, status=400)
-        if not user.is_staff:
-            return Response({"error": "This account is not allowed to use the admin console"}, status=403)
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({"token": token.key, "user": {"username": user.get_username(), "name": user.get_full_name() or user.get_username()}})
-
 
 class LogoutView(APIView):
     def post(self, request):
@@ -252,3 +237,11 @@ class ExportView(APIView):
         for u in DailyUsage.objects.select_related("asset").order_by("day", "asset_id", "-seconds").iterator():
             w.writerow([u.day.isoformat(), u.asset_id, u.asset.employee_name, u.asset.employee_email, u.app_id, u.app_name, round(u.seconds), u.sessions])
         return HttpResponse(buf.getvalue(), content_type="text/csv; charset=utf-8")
+
+
+class IconsView(APIView):
+    """POST {ids: [...]} -> {icons: {id: data-url}} for the ids that have an icon."""
+
+    def post(self, request):
+        ids = [str(i)[:255] for i in (request.data.get("ids") or [])[:300] if i]
+        return Response({"icons": {i.app_id: i.data_url() for i in AppIcon.objects.filter(app_id__in=ids)}})

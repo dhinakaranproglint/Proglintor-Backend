@@ -19,10 +19,12 @@ from rest_framework import authentication, exceptions, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, hash_token
+from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, WeekendAlert, hash_token
 from .policy import DEFAULT_POLICY, normalize_policy
 
 DAY_RE = re.compile(r"^\d{4}-\d\d-\d\d$")
+ICON_RE = re.compile(r"^data:(image/png|image/svg\+xml|image/jpeg);base64,([A-Za-z0-9+/=]+)$")
+ICON_MAX_BYTES = 256 * 1024
 
 
 def from_ms(value):
@@ -49,11 +51,13 @@ class AgentTokenAuthentication(authentication.BaseAuthentication):
     def authenticate(self, request):
         header = request.META.get("HTTP_AUTHORIZATION", "")
         if not header.lower().startswith("bearer "):
-            raise exceptions.AuthenticationFailed("This device is not registered")
+            raise exceptions.AuthenticationFailed({"error": "Missing credentials", "code": "unauthorized"})
         token = header[7:].strip()
         asset = Asset.objects.filter(token_hash=hash_token(token)).first() if token else None
         if not asset:
-            raise exceptions.AuthenticationFailed("This device is not registered")
+            # The explicit code lets the agent tell "this asset was deleted / re-issued" apart from any other 401
+            # (for example from a proxy), so it only disconnects itself when the server really removed it.
+            raise exceptions.AuthenticationFailed({"error": "This device was removed from Proglintor", "code": "device_removed"})
         return (None, asset)
 
     def authenticate_header(self, request):
@@ -200,3 +204,33 @@ class AlertsView(AgentView):
                 },
             )
         return Response({"ok": True, "received": received})
+
+
+class IconsMissingView(AgentView):
+    """Which of these app ids have no icon yet? (Agents upload each icon once.)"""
+
+    def post(self, request):
+        ids = [clip(i, 255) for i in (request.data.get("ids") or [])[:1000] if i]
+        have = set(AppIcon.objects.filter(app_id__in=ids).values_list("app_id", flat=True))
+        return Response({"missing": [i for i in dict.fromkeys(ids) if i not in have]})
+
+
+class IconsUploadView(AgentView):
+    def post(self, request):
+        import base64
+        saved = 0
+        for item in (request.data.get("icons") or [])[:100]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            m = ICON_RE.match(str(item.get("data") or ""))
+            if not m:
+                continue
+            try:
+                raw = base64.b64decode(m.group(2), validate=True)
+            except ValueError:
+                continue
+            if not raw or len(raw) > ICON_MAX_BYTES:
+                continue
+            AppIcon.objects.update_or_create(app_id=clip(item["id"], 255), defaults={"data": raw, "content_type": m.group(1)})
+            saved += 1
+        return Response({"ok": True, "saved": saved})

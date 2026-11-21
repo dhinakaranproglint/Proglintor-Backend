@@ -92,6 +92,8 @@ class Asset(models.Model):
             "employeeEmail": self.employee_email,
             "department": self.department,
             "location": self.location,
+            "deviceType": self.device_type,
+            "enrolledAt": ms(self.enrolled_at),
         }
 
     def to_dict(self, today_seconds=None):
@@ -230,3 +232,34 @@ class Setting(models.Model):
     @classmethod
     def put(cls, key, value):
         cls.objects.update_or_create(key=key, defaults={"value": value})
+
+
+class PasswordResetCode(models.Model):
+    """One-time 6-digit code e-mailed to an admin who forgot their password."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="reset_codes")
+    code_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    @property
+    def valid(self):
+        return not self.used and self.attempts < 5 and timezone.now() < self.expires_at
+
+
+class AppIcon(models.Model):
+    """App icon uploaded by agents (shared by every asset that uses the same app id)."""
+
+    app_id = models.CharField(primary_key=True, max_length=255)
+    data = models.BinaryField()
+    content_type = models.CharField(max_length=40, default="image/png")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def data_url(self):
+        import base64
+        return f"data:{self.content_type};base64,{base64.b64encode(bytes(self.data)).decode()}"

@@ -132,6 +132,16 @@ if env_bool("DJANGO_BEHIND_PROXY", False):
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     USE_X_FORWARDED_HOST = True
 
+# E-mail (password reset codes). In development the e-mail is printed in the server console.
+EMAIL_BACKEND = env("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(env("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", "Proglintor <no-reply@proglint.com>")
+PASSWORD_RESET_MINUTES = int(env("PASSWORD_RESET_MINUTES", "15"))
+
 # Agents are considered online if they reported within this many seconds.
 PULSE_ONLINE_SECONDS = int(env("PULSE_ONLINE_SECONDS", "90"))
 # Address shown to admins for connecting agents (defaults to the URL the admin app uses).

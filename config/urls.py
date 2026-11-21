@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path
 
-from pulse import admin_api, agent_api
+from pulse import admin_api, agent_api, auth_api
 
 admin.site.site_header = "Proglintor"
 admin.site.site_title = "Proglintor"
@@ -15,8 +15,13 @@ urlpatterns = [
     path("api/agent/usage", agent_api.UsageView.as_view()),
     path("api/agent/installed", agent_api.InstalledView.as_view()),
     path("api/agent/alerts", agent_api.AlertsView.as_view()),
+    path("api/agent/icons/missing", agent_api.IconsMissingView.as_view()),
+    path("api/agent/icons", agent_api.IconsUploadView.as_view()),
     # Admin desktop app
-    path("api/admin/login", admin_api.LoginView.as_view()),
+    path("api/admin/login", auth_api.LoginView.as_view()),
+    path("api/admin/setup", auth_api.SetupView.as_view()),
+    path("api/admin/password/forgot", auth_api.ForgotPasswordView.as_view()),
+    path("api/admin/password/reset", auth_api.ResetPasswordView.as_view()),
     path("api/admin/logout", admin_api.LogoutView.as_view()),
     path("api/admin/me", admin_api.MeView.as_view()),
     path("api/admin/dashboard", admin_api.DashboardView.as_view()),
@@ -26,6 +31,7 @@ urlpatterns = [
     path("api/admin/alerts", admin_api.AlertListView.as_view()),
     path("api/admin/alerts/<str:uid>", admin_api.AlertDetailView.as_view()),
     path("api/admin/policy", admin_api.PolicyView.as_view()),
+    path("api/admin/icons", admin_api.IconsView.as_view()),
     path("api/admin/export.csv", admin_api.ExportView.as_view()),
     # Django's built-in admin site (superusers)
     path("django-admin/", admin.site.urls),

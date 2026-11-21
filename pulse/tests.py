@@ -1,3 +1,4 @@
+import re
 import time
 
 from django.contrib.auth.models import User
@@ -130,9 +131,108 @@ class AgentFlowTests(TestCase):
 
         # A new code disconnects the laptop: the agent gets 401 and asks for a new code.
         self.admin.post("/api/admin/assets/PAP080/reset-code")
-        self.assertEqual(self.agent.post("/api/agent/heartbeat", {}, format="json").status_code, 401)
+        r = self.agent.post("/api/agent/heartbeat", {}, format="json")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["code"], "device_removed")
+
+    def test_icons_upload_and_admin_fetch(self):
+        import base64
+        token = self.enroll().json()["token"]
+        self.agent.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-icon").decode()
+        r = self.agent.post("/api/agent/icons/missing", {"ids": ["com.microsoft.VSCode", "com.apple.Safari"]}, format="json")
+        self.assertEqual(r.json()["missing"], ["com.microsoft.VSCode", "com.apple.Safari"])
+        r = self.agent.post("/api/agent/icons", {"icons": [
+            {"id": "com.microsoft.VSCode", "data": f"data:image/png;base64,{png}"},
+            {"id": "bad", "data": "data:text/html;base64,PGgxPg=="},  # rejected: not an image
+        ]}, format="json")
+        self.assertEqual(r.json()["saved"], 1)
+        r = self.agent.post("/api/agent/icons/missing", {"ids": ["com.microsoft.VSCode", "com.apple.Safari"]}, format="json")
+        self.assertEqual(r.json()["missing"], ["com.apple.Safari"])
+        icons = self.admin.post("/api/admin/icons", {"ids": ["com.microsoft.VSCode", "com.apple.Safari"]}, format="json").json()["icons"]
+        self.assertEqual(list(icons), ["com.microsoft.VSCode"])
+        self.assertTrue(icons["com.microsoft.VSCode"].startswith("data:image/png;base64,"))
+        self.assertEqual(APIClient().post("/api/admin/icons", {"ids": ["x"]}, format="json").status_code, 401)
+
+    def test_deleted_asset_is_reported_to_the_agent_explicitly(self):
+        token = self.enroll().json()["token"]
+        self.agent.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(self.agent.post("/api/agent/heartbeat", {}, format="json").status_code, 200)
+        self.assertEqual(self.admin.delete("/api/admin/assets/PAP080").status_code, 204)
+        r = self.agent.post("/api/agent/heartbeat", {"state": "tracking"}, format="json")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["code"], "device_removed")
+        self.assertEqual(self.agent.post("/api/agent/usage", {"days": {}}, format="json").json()["code"], "device_removed")
+        # a request with no credentials at all is a different problem, not "removed"
+        self.assertEqual(APIClient().post("/api/agent/heartbeat", {}, format="json").json()["code"], "unauthorized")
+
+    def test_enroll_returns_asset_details_for_the_agent(self):
+        r = self.enroll().json()["asset"]
+        self.assertEqual(r["deviceType"], "Laptop")
+        self.assertIsNotNone(r["enrolledAt"])
 
     def test_enroll_rate_limit(self):
         for _ in range(10):
             self.enroll("ZZZZ-ZZZZ")
         self.assertEqual(self.enroll().status_code, 429)
+
+
+class AuthFlowTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.api = APIClient()
+
+    def test_first_admin_setup_only_locally_and_only_once(self):
+        r = self.api.post("/api/admin/login", {"login": "anyone", "password": "x"}, format="json")
+        self.assertTrue(r.json().get("needsSetup"), "login explains that no admin exists yet")
+        self.assertEqual(self.api.get("/api/admin/setup").json(), {"needsSetup": True, "allowed": True})
+        remote = self.api.post("/api/admin/setup", {"username": "x", "email": "x@proglint.com", "password": "Str0ng-Pass-9"}, format="json", REMOTE_ADDR="10.0.0.5")
+        self.assertEqual(remote.status_code, 403, "not allowed from another computer")
+        weak = self.api.post("/api/admin/setup", {"username": "dhina", "email": "dhina@proglint.com", "password": "123"}, format="json")
+        self.assertEqual(weak.json()["field"], "password")
+        r = self.api.post("/api/admin/setup", {"name": "Dhinakaran C", "username": "dhina", "email": "dhina@proglint.com", "password": "Str0ng-Pass-9"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["user"]["name"], "Dhinakaran C")
+        self.assertEqual(self.api.post("/api/admin/setup", {"username": "y", "email": "y@proglint.com", "password": "Str0ng-Pass-9"}, format="json").status_code, 409)
+        self.assertFalse(self.api.get("/api/admin/setup").json()["needsSetup"])
+        # Sign in with the e-mail address instead of the username.
+        self.assertEqual(self.api.post("/api/admin/login", {"login": "DHINA@proglint.com", "password": "Str0ng-Pass-9"}, format="json").status_code, 200)
+
+    def test_forgot_and_reset_password(self):
+        from django.core import mail
+        User.objects.create_user("dhina", email="dhina@proglint.com", password="Old-Pass-123x", is_staff=True)
+        old_token = self.api.post("/api/admin/login", {"login": "dhina", "password": "Old-Pass-123x"}, format="json").json()["token"]
+
+        unknown = self.api.post("/api/admin/password/forgot", {"login": "nobody@proglint.com"}, format="json")
+        known = self.api.post("/api/admin/password/forgot", {"login": "dhina@proglint.com"}, format="json")
+        self.assertEqual(unknown.json()["message"], known.json()["message"], "same answer: doesn't reveal which accounts exist")
+        self.assertEqual(len(mail.outbox), 1)
+        code = re.search(r"\b(\d{6})\b", mail.outbox[0].body).group(1)
+
+        wrong = "000000" if code != "000000" else "111111"
+        r = self.api.post("/api/admin/password/reset", {"login": "dhina", "code": wrong, "password": "New-Pass-456y"}, format="json")
+        self.assertIn("4 attempts left", r.json()["error"])
+        r = self.api.post("/api/admin/password/reset", {"login": "dhina", "code": code, "password": "short"}, format="json")
+        self.assertEqual(r.json()["field"], "password")
+        r = self.api.post("/api/admin/password/reset", {"login": "dhina", "code": f"{code[:3]} {code[3:]}", "password": "New-Pass-456y"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.api.post("/api/admin/password/reset", {"login": "dhina", "code": code, "password": "Other-Pass-789z"}, format="json").status_code, 400, "code is single use")
+        self.assertEqual(self.api.post("/api/admin/login", {"login": "dhina", "password": "New-Pass-456y"}, format="json").status_code, 200)
+        self.api.credentials(HTTP_AUTHORIZATION=f"Token {old_token}")
+        self.assertEqual(self.api.get("/api/admin/me").status_code, 401, "old sessions are signed out after a reset")
+
+    def test_expired_code(self):
+        from datetime import timedelta
+        from django.core import mail
+        from .models import PasswordResetCode
+        User.objects.create_user("dhina", email="dhina@proglint.com", password="Old-Pass-123x", is_staff=True)
+        self.api.post("/api/admin/password/forgot", {"login": "dhina"}, format="json")
+        code = re.search(r"\b(\d{6})\b", mail.outbox[0].body).group(1)
+        PasswordResetCode.objects.update(expires_at=timezone.now() - timedelta(minutes=1))
+        r = self.api.post("/api/admin/password/reset", {"login": "dhina", "code": code, "password": "New-Pass-456y"}, format="json")
+        self.assertIn("expired", r.json()["error"])
+
+    def test_setup_with_email_only(self):
+        r = self.api.post("/api/admin/setup", {"name": "Dhinakaran C", "email": "dhina@proglint.com", "password": "Str0ng-Pass-9"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(self.api.post("/api/admin/login", {"login": "dhina@proglint.com", "password": "Str0ng-Pass-9"}, format="json").status_code, 200)

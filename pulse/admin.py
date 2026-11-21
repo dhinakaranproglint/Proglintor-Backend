@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Asset, DailyUsage, InstalledApps, Setting, WeekendAlert
+from .models import AppIcon, Asset, DailyUsage, InstalledApps, PasswordResetCode, Setting, WeekendAlert
 
 
 @admin.register(Asset)
@@ -29,3 +29,16 @@ class WeekendAlertAdmin(admin.ModelAdmin):
 
 admin.site.register(InstalledApps)
 admin.site.register(Setting)
+
+
+@admin.register(PasswordResetCode)
+class PasswordResetCodeAdmin(admin.ModelAdmin):
+    list_display = ("user", "created_at", "expires_at", "attempts", "used")
+    readonly_fields = ("code_hash",)
+
+
+@admin.register(AppIcon)
+class AppIconAdmin(admin.ModelAdmin):
+    list_display = ("app_id", "content_type", "updated_at")
+    search_fields = ("app_id",)
+    exclude = ("data",)
