@@ -24,9 +24,9 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import orbit
+from . import helpmsg, orbit, timesheet
 from .agent_api import AgentView, _rate_limited
-from .models import Asset, Recognition, Task
+from .models import Asset, ManagerMessage, Recognition, Task
 
 
 def fail(err):
@@ -108,6 +108,7 @@ class TaskDetailView(AgentView):
         task.status, task.percent = status, percent
         task.completed_at = (task.completed_at or timezone.now()) if status == "done" else None
         task.save()
+        timesheet.record_event(task)
         return Response(task.to_dict())
 
 
@@ -218,6 +219,9 @@ class TaskAdminListView(APIView):
         group = uuid.uuid4()
         with transaction.atomic():
             created = [Task.objects.create(asset=a, group=group, created_by=request.user, **fields) for a in assets]
+            for t in created:
+                timesheet.record_event(t)
+                helpmsg.resolve_for(t.asset)  # they asked for work and now have some
         return Response({"items": [t.to_dict(admin=True) for t in created], "feasibility": check}, status=201)
 
 
@@ -235,9 +239,12 @@ class TaskAdminDetailView(APIView):
                     fields["percent"] = 100
         except orbit.OrbitError as err:
             return fail(err)
+        changed = any(k in fields for k in ("status", "percent"))
         for k, v in fields.items():
             setattr(task, k, v)
         task.save()
+        if changed:
+            timesheet.record_event(task)
         return Response(task.to_dict(admin=True))
 
     def delete(self, request, task_id):
@@ -279,6 +286,24 @@ class RecognitionCertificateView(APIView):
     def get(self, request, rec_id):
         rec = get_object_or_404(Recognition.objects.select_related("asset", "decided_by"), pk=rec_id, status="approved")
         return Response({"html": orbit.certificate_html(rec), "certificateId": rec.certificate_id})
+
+
+class ManagerMessageListView(APIView):
+    """The admin's inbox of "I have no task" messages (the reporting person also gets an email)."""
+
+    def get(self, request):
+        qs = ManagerMessage.objects.select_related("asset")
+        if request.query_params.get("open") == "1":
+            qs = qs.filter(resolved=False)
+        return Response({"items": [m.to_dict() for m in qs[:100]], "open": ManagerMessage.objects.filter(resolved=False).count()})
+
+
+class ManagerMessageResolveView(APIView):
+    def post(self, request, msg_id):
+        m = get_object_or_404(ManagerMessage, pk=msg_id)
+        m.resolved = True
+        m.save(update_fields=["resolved"])
+        return Response(m.to_dict())
 
 
 class TeamView(APIView):

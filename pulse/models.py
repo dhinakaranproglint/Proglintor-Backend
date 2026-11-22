@@ -31,6 +31,8 @@ class Asset(models.Model):
     employee_name = models.CharField(max_length=120)
     employee_email = models.EmailField()
     department = models.CharField(max_length=120, blank=True)
+    manager_name = models.CharField("reporting person", max_length=120, blank=True)
+    manager_email = models.EmailField("reporting person email", blank=True)
     location = models.CharField("office / address", max_length=255, blank=True)
     device_type = models.CharField(max_length=30, default="Laptop")
     notes = models.TextField(blank=True)
@@ -94,6 +96,8 @@ class Asset(models.Model):
             "employeeName": self.employee_name,
             "employeeEmail": self.employee_email,
             "department": self.department,
+            "managerName": self.manager_name,
+            "managerEmail": self.manager_email,
             "location": self.location,
             "deviceType": self.device_type,
             "enrolledAt": ms(self.enrolled_at),
@@ -479,7 +483,7 @@ class Recognition(models.Model):
     """Appreciation for good work. Orbit (or the employee, or an admin) proposes it; an admin approves it, gives a reward and credits;
     the employee then gets a certificate. Nothing is awarded without an admin's decision."""
     KINDS = [("delivery", "Delivery"), ("early", "Delivered early"), ("weekend", "Weekend / extra hours"), ("focus", "Focus"),
-             ("extra", "Extra effort"), ("kudos", "Kudos")]
+             ("extra", "Extra effort"), ("kudos", "Kudos"), ("month", "Employee of the Month")]
     SOURCES = [("orbit", "Orbit"), ("employee", "Employee"), ("admin", "Admin")]
     STATUSES = [("pending", "Pending"), ("approved", "Approved"), ("rejected", "Not this time")]
 
@@ -515,3 +519,75 @@ class Recognition(models.Model):
             out.update({"assetId": self.asset_id, "employeeName": self.asset.employee_name, "department": self.asset.department,
                         "decidedBy": self.decided_by.get_username() if self.decided_by_id else None})
         return out
+
+
+# ---- Timesheets and monthly awards ------------------------------------------------------------------
+
+class TaskEvent(models.Model):
+    """A point in a task's life (created, progress, done). Timesheets are built from these plus the laptop's real tracked time."""
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="events")
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="task_events")
+    at = models.DateTimeField(db_index=True)
+    status = models.CharField(max_length=12)
+    percent = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["at"]
+        indexes = [models.Index(fields=["asset", "at"])]
+
+
+class TimesheetSummary(models.Model):
+    """The AI (or template) summary of one person's week or month. Kept so the employee and the admin read exactly the same words."""
+    PERIODS = [("week", "Week"), ("month", "Month")]
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="timesheet_summaries")
+    period = models.CharField(max_length=5, choices=PERIODS)
+    start = models.DateField()
+    digest = models.CharField(max_length=40)   # of the facts it was written from; a change in the data means a fresh summary
+    text = models.TextField()
+    source = models.CharField(max_length=10, default="template")  # "llm" | "template"
+    created_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["asset", "period", "start"], name="timesheet_summary_once")]
+
+
+class MonthlyAward(models.Model):
+    """The admin's choice of Employee of the Month. One per month; the certificate is a normal approved Recognition."""
+    month = models.CharField(max_length=7, unique=True)  # YYYY-MM
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="monthly_awards")
+    recognition = models.OneToOneField(Recognition, on_delete=models.CASCADE, related_name="monthly_award")
+    scores = models.JSONField(default=dict, blank=True)   # what the admin saw when choosing
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-month"]
+
+    def to_dict(self, admin=True):
+        return {"month": self.month, "assetId": self.asset_id, "employeeName": self.asset.employee_name, "department": self.asset.department,
+                "recognitionId": str(self.recognition_id), "reward": self.recognition.reward, "citation": self.recognition.citation,
+                "credits": self.recognition.credits, "certificateId": self.recognition.certificate_id, "decidedAt": ms(self.created_at),
+                **({"scores": self.scores} if admin else {})}
+
+
+class ManagerMessage(models.Model):
+    """A message Orbit sent on an employee's behalf to their reporting person (for now: "I have no task"). The text is written by the server from a
+    fixed template, never by the model, so it can't be talked into saying something else."""
+    KINDS = [("no_tasks", "No tasks assigned")]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="manager_messages")
+    kind = models.CharField(max_length=12, choices=KINDS, default="no_tasks")
+    body = models.CharField(max_length=800)
+    to_name = models.CharField(max_length=120, blank=True)
+    to_email = models.EmailField(blank=True)
+    emailed = models.BooleanField(default=False)  # False when there was no address or the mail server refused it; the admin inbox still has it
+    resolved = models.BooleanField(default=False, db_index=True)  # set when the admin gives them work or closes it
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def to_dict(self):
+        return {"id": str(self.id), "assetId": self.asset_id, "employeeName": self.asset.employee_name, "department": self.asset.department,
+                "kind": self.kind, "body": self.body, "toName": self.to_name, "toEmail": self.to_email, "emailed": self.emailed,
+                "resolved": self.resolved, "createdAt": ms(self.created_at)}

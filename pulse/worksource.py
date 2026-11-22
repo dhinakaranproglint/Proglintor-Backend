@@ -17,6 +17,7 @@ from base64 import b64encode
 from datetime import datetime, time, timedelta
 
 from django.conf import settings
+from django.utils import timezone
 
 log = logging.getLogger("pulse.orbit")
 
@@ -128,9 +129,60 @@ def _live_ado(email, start, end):
 
 # ---- public ---------------------------------------------------------------------------------------
 
+def code_source():
+    """'azure devops' (real), 'demo data' (derived from the employee's tasks, simulated mode only) or '' (nothing to show)."""
+    if mode() == "live" and ado_configured():
+        return "azure devops"
+    return "demo data" if mode() == "simulated" else ""
+
+
 def code_connected():
-    """Is there a real source of commits / pull requests?"""
-    return mode() == "live" and ado_configured()
+    return bool(code_source())
+
+
+REPOS = ["payments-api", "web-app", "mobile-app", "data-pipeline", "auth-service"]
+PREFIX = ["feat", "fix", "refactor", "test", "docs"]
+
+
+def _sim_code(asset, start, end, today):
+    """Demo commits and pull requests that follow the employee's real task activity: commits on the days a task was worked on, and a pull request for
+    every completed task (merged) or well-advanced one (open). Same inputs, same output. Only ever used in simulated mode and labelled as demo data."""
+    from .models import Task, TaskEvent
+    commits, prs = [], []
+    for t in Task.objects.filter(asset=asset):
+        repo = _rng("repo", t.id).choice(REPOS)
+        days = {timezone.localtime(e.at).date() for e in TaskEvent.objects.filter(task=t) if e.status != "todo" or e.percent}
+        if t.completed_at:
+            days.add(timezone.localtime(t.completed_at).date())
+        for d in sorted(x for x in days if start <= x <= end):
+            r = _rng("commit", t.id, d)
+            for i in range(r.randint(1, 4)):
+                sha = hashlib.sha1(f"{t.id}{d}{i}".encode()).hexdigest()[:7]
+                commits.append({"sha": sha, "repo": repo, "message": f"{r.choice(PREFIX)}: {t.title[:90]}", "day": d.isoformat(), "task": t.title})
+        if t.status == "done" and t.completed_at and start <= timezone.localtime(t.completed_at).date() <= end:
+            prs.append({"id": 1000 + int(_rng("pr", t.id).random() * 8000), "repo": repo, "title": t.title[:120], "state": "merged",
+                        "review": "approved", "day": timezone.localtime(t.completed_at).date().isoformat()})
+        elif t.status == "in_progress" and t.percent >= 50:
+            prs.append({"id": 1000 + int(_rng("pr", t.id).random() * 8000), "repo": repo, "title": t.title[:120], "state": "open",
+                        "review": "pending", "day": end.isoformat()})
+    # A working day with little or no task activity still has some commits: people commit between task updates. Deterministic, weekdays only.
+    titles = [t.title for t in Task.objects.filter(asset=asset).order_by("-updated_at")[:6]] or ["Code review follow-ups", "Dependency updates", "Unit tests"]
+    for d in _days(start, end):
+        if d.weekday() >= 5 or d > today:
+            continue
+        have = sum(1 for c in commits if c["day"] == d.isoformat())
+        r = _rng("base", asset.asset_id, d)
+        want = r.randint(1, 3) if d == today else r.randint(3, 6)
+        for i in range(max(0, want - have)):
+            title = r.choice(titles)
+            commits.append({"sha": hashlib.sha1(f"{asset.asset_id}{d}b{i}".encode()).hexdigest()[:7], "repo": r.choice(REPOS),
+                            "message": f"{r.choice(PREFIX)}: {title[:90]}", "day": d.isoformat(), "task": title})
+        if d < today and r.random() < 0.45 and not any(p["day"] == d.isoformat() for p in prs):
+            prs.append({"id": 1000 + int(r.random() * 8000), "repo": r.choice(REPOS), "title": r.choice(titles)[:120], "state": "merged" if d < today - timedelta(days=1) else "open",
+                        "review": "approved" if d < today - timedelta(days=1) else "pending", "day": d.isoformat()})
+    commits.sort(key=lambda c: c["day"], reverse=True)
+    prs.sort(key=lambda p: p["day"], reverse=True)
+    return commits, prs
 
 
 def meetings(asset, start, end):
@@ -147,11 +199,14 @@ def meetings(asset, start, end):
 
 def code_activity(asset, start, end, today):
     """-> {commits: [...], prs: [...]}"""
-    # Commits and pull requests are never simulated: they are either real (Azure DevOps) or absent. Only meetings and tasks may be demo data.
-    m = mode()
+    # Real (Azure DevOps) when connected. In simulated mode only, demo commits/PRs follow the employee's task activity. Otherwise nothing.
+    src = code_source()
     try:
-        if m == "live" and ado_configured():
+        if src == "azure devops":
             commits, prs = _live_ado(asset.employee_email, start, end)
+            return {"commits": commits, "prs": prs}
+        if src == "demo data":
+            commits, prs = _sim_code(asset, start, end, today)
             return {"commits": commits, "prs": prs}
     except (urllib.error.URLError, OSError, ValueError, KeyError, TimeoutError) as err:
         log.warning("code activity source failed: %s", type(err).__name__)

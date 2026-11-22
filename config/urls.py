@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path
 
-from pulse import admin_api, agent_api, auth_api, orbit_api, software_api
+from pulse import admin_api, agent_api, auth_api, orbit_api, software_api, timesheet_api
 
 admin.site.site_header = "Proglintor"
 admin.site.site_title = "Proglintor"
@@ -26,6 +26,8 @@ urlpatterns = [
     path("api/agent/orbit/achievements", orbit_api.AchievementsView.as_view()),
     path("api/agent/orbit/recognitions", orbit_api.RecognitionListView.as_view()),
     path("api/agent/orbit/recognitions/<uuid:rec_id>/certificate", orbit_api.CertificateView.as_view()),
+    path("api/agent/orbit/timesheet", timesheet_api.TimesheetView.as_view()),
+    path("api/agent/orbit/timesheet/summary", timesheet_api.TimesheetSummaryView.as_view()),
     path("api/agent/orbit/pulse", orbit_api.PulseView.as_view()),
     path("api/agent/software/catalogue", software_api.CatalogueView.as_view()),
     path("api/agent/software/preview", software_api.PreviewView.as_view()),
@@ -62,6 +64,13 @@ urlpatterns = [
     path("api/admin/orbit/recognitions", orbit_api.RecognitionAdminListView.as_view()),
     path("api/admin/orbit/recognitions/<uuid:rec_id>/decision", orbit_api.RecognitionDecisionView.as_view()),
     path("api/admin/orbit/recognitions/<uuid:rec_id>/certificate", orbit_api.RecognitionCertificateView.as_view()),
+    path("api/admin/orbit/timesheets/<str:asset_id>", timesheet_api.AdminTimesheetView.as_view()),
+    path("api/admin/orbit/timesheets/<str:asset_id>/summary", timesheet_api.AdminTimesheetSummaryView.as_view()),
+    path("api/admin/orbit/awards/candidates", timesheet_api.AwardCandidatesView.as_view()),
+    path("api/admin/orbit/awards/citation", timesheet_api.AwardCitationView.as_view()),
+    path("api/admin/orbit/awards", timesheet_api.AwardListView.as_view()),
+    path("api/admin/orbit/messages", orbit_api.ManagerMessageListView.as_view()),
+    path("api/admin/orbit/messages/<uuid:msg_id>/resolve", orbit_api.ManagerMessageResolveView.as_view()),
     path("api/admin/orbit/team", orbit_api.TeamView.as_view()),
     path("api/admin/orbit/chat", orbit_api.AdminChatView.as_view()),
     path("api/admin/policy", admin_api.PolicyView.as_view()),

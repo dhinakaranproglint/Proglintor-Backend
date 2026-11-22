@@ -81,6 +81,15 @@ def clean_asset_fields(data, partial=False, existing=None):
             raise ValidationError("Enter a valid employee email address")
         out["employee_email"] = email
     text("department", "department", 120)
+    text("managerName", "manager_name", 120)
+    if not (partial and "managerEmail" not in data):
+        mgr = str(data.get("managerEmail") or "").strip()
+        if mgr:
+            try:
+                validate_email(mgr)
+            except ValidationError:
+                raise ValidationError("Enter a valid email address for the reporting person")
+        out["manager_email"] = mgr
     text("location", "location", 255)
     text("notes", "notes", 5000)
     if not (partial and "deviceType" not in data):

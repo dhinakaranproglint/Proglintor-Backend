@@ -90,7 +90,7 @@ class DataTests(TestCase):
         decls, impl = orbit.employee_tools(self.a, TODAY)
         names = {d["name"] for d in decls}
         self.assertEqual(names, {"get_my_tasks", "get_my_usage", "get_my_achievements", "get_my_recognitions", "get_my_meetings",
-                                 "get_my_code_activity", "get_my_workload"})
+                                 "get_my_code_activity", "get_my_workload", "get_my_timesheet", "tell_reporting_person_no_tasks"})
         self.assertNotIn("employee", json.dumps(decls).lower().replace("the employee's", ""))
         for d in decls:
             for prop in (d.get("parameters") or {}).get("properties", {}):
@@ -476,14 +476,35 @@ class RealUsageTests(TestCase):
         self.assertIn("4 hours", y)
         self.assertEqual([orbit.duration_text(x) for x in (10, 49, 90, 3000, 3900, 7200)], ["less than a minute", "1 minute", "2 minutes", "50 minutes", "1 hour 5 minutes", "2 hours"])
 
-    def test_commits_and_pull_requests_are_never_simulated(self):
-        _, impl = orbit.employee_tools(self.a, TODAY)
-        r = impl["get_my_code_activity"]({})
-        self.assertEqual(r["source"], "not connected")
-        self.assertNotIn("commits", r)
-        b = orbit.briefing(self.a, NOW)
-        self.assertNotIn("code", b["sections"])
-        self.assertIn("meetings", b["sections"], "meetings may still be demo data")
+    def test_commits_and_pull_requests_follow_task_data_in_demo_mode_only(self):
         from . import worksource
-        self.assertEqual(worksource.code_activity(self.a, TODAY - timedelta(days=3), TODAY, TODAY), {"commits": [], "prs": []})
-        self.assertFalse(worksource.code_connected())
+        from .models import TaskEvent
+        yday = TODAY - timedelta(days=1)
+        at = lambda d: datetime(d.year, d.month, d.day, 11, 0, tzinfo=NOW.tzinfo)
+        done = Task.objects.create(asset=self.a, title="Fix login bug", status="done", percent=100, completed_at=at(yday))
+        TaskEvent.objects.create(task=done, asset=self.a, at=at(yday), status="done", percent=100)
+        wip = Task.objects.create(asset=self.a, title="Build report", status="in_progress", percent=60)
+        TaskEvent.objects.create(task=wip, asset=self.a, at=at(TODAY), status="in_progress", percent=60)
+        Task.objects.create(asset=self.b, title="Someone else's", status="done", percent=100, completed_at=at(yday))
+        with override_settings(ORBIT_WORK_SOURCE="simulated"):
+            _, impl = orbit.employee_tools(self.a, TODAY)
+            r = impl["get_my_code_activity"]({"days": 3})
+            self.assertEqual(r["source"], "demo data")
+            self.assertIn("Fix login bug", r["byDay"][yday.isoformat()]["tasksCompleted"])
+            self.assertGreaterEqual(r["byDay"][yday.isoformat()]["commits"], 1)
+            self.assertLessEqual({("Fix login bug", "merged"), ("Build report", "open")}, {(p["title"], p["state"]) for p in r["pullRequests"]})
+            quiet = worksource.code_activity(self.b, TODAY - timedelta(days=2), TODAY - timedelta(days=1), TODAY)
+            self.assertGreaterEqual(len(quiet["commits"]), 3, "a working day with no task activity still has commits")
+            again = worksource.code_activity(self.a, yday, TODAY, TODAY)
+            self.assertEqual(again, worksource.code_activity(self.a, yday, TODAY, TODAY), "deterministic")
+            reply = orbit.chat(self.a, [{"role": "user", "content": "How many commits did I make yesterday?"}], NOW)["reply"]
+            self.assertIn("yesterday", reply.lower())
+            self.assertIn("1 task", reply)
+            self.assertIn("demo data", reply)
+            self.assertIn("code", orbit.briefing(self.a, NOW)["sections"])
+        with override_settings(ORBIT_WORK_SOURCE="off"):
+            self.assertEqual(worksource.code_activity(self.a, yday, TODAY, TODAY), {"commits": [], "prs": []})
+            self.assertFalse(worksource.code_connected())
+            _, impl = orbit.employee_tools(self.a, TODAY)
+            self.assertEqual(impl["get_my_code_activity"]({})["source"], "not connected")
+            self.assertIn("don't have commit", orbit.chat(self.a, [{"role": "user", "content": "how many commits yesterday"}], NOW)["reply"])

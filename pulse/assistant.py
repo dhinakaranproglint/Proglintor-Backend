@@ -145,14 +145,17 @@ def _call_gemini_search(system, user_text):
         return None
 
 
-def clean_reply(text):
-    """Plain text only: no links, no markdown, no stray control characters, bounded length."""
+def clean_reply(text, limit=None):
+    """Plain text only: no links, no markdown, no stray control characters, bounded length (cut at a sentence end when possible)."""
+    limit = limit or MAX_REPLY
     s = re.sub(r"https?://\S+|www\.\S+", "", str(text or ""))
     s = re.sub(r"[*_`#>]+", "", s)
     s = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", s)
     s = re.sub(r"\s+", " ", s).strip()
-    if len(s) > MAX_REPLY:
-        s = s[:MAX_REPLY].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    if len(s) > limit:
+        cut = s[:limit]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), limit - 1 if cut.endswith((".", "!", "?")) else -1)
+        s = cut[: end + 1] if end > limit * 0.5 else cut.rsplit(" ", 1)[0].rstrip(",;:") + "…"
     return s
 
 

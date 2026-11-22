@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.utils import timezone
 
-from .models import Asset, DailyUsage, InstalledApps, Recognition, Task, WeekendAlert
+from .models import Asset, DailyUsage, InstalledApps, Recognition, Task, TaskEvent, WeekendAlert
 
 MARK = "mock-data"
 WORK_START = 9.5   # hours; the working day starts around half past nine
@@ -139,6 +139,26 @@ def seed_usage(asset, persona, days, now):
     return written
 
 
+def _seed_events(task, asset, created, completed, status, percent, today, now, rng):
+    """A believable trail for a task: created, a few days of progress, then done (or still going). Timesheets are built from this."""
+    def at(d, hour):
+        return min(timezone.make_aware(datetime.combine(d, time(hour, rng.randint(0, 59)))), now)
+    TaskEvent.objects.create(task=task, asset=asset, at=at(created, 10), status="todo", percent=0)
+    end = (completed.date() if completed else today)
+    span = max(0, (end - created).days)
+    work_days = [created + timedelta(days=i) for i in range(1, span + 1) if (created + timedelta(days=i)).weekday() < 5][-4:]
+    steps = len(work_days)
+    for i, d in enumerate(work_days):
+        if completed and d == completed.date():
+            continue
+        pct = int(100 * (i + 1) / (steps + 1)) if completed else min(percent, int(100 * (i + 1) / (steps + 1)))
+        TaskEvent.objects.create(task=task, asset=asset, at=at(d, rng.randint(11, 17)), status="in_progress", percent=max(10, pct))
+    if completed:
+        TaskEvent.objects.create(task=task, asset=asset, at=completed, status="done", percent=100)
+    elif status in ("blocked", "in_progress") and not work_days:
+        TaskEvent.objects.create(task=task, asset=asset, at=at(today, 11), status=status, percent=percent)
+
+
 def seed_tasks(asset, persona, days, now, few=False):
     """~15 tasks over the window: most finished (some early, some late), a few in flight, a few overdue, a few coming up."""
     today = now.date()
@@ -179,6 +199,7 @@ def seed_tasks(asset, persona, days, now, few=False):
         if was_new:
             made += 1
             Task.objects.filter(pk=t.pk).update(created_at=timezone.make_aware(datetime.combine(created, time(10, 0))))
+            _seed_events(t, asset, created, completed, status, percent, today, now, rng)
     return made
 
 
