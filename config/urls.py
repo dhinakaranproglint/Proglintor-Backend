@@ -46,6 +46,8 @@ urlpatterns = [
     path("api/admin/logout", admin_api.LogoutView.as_view()),
     path("api/admin/me", admin_api.MeView.as_view()),
     path("api/admin/dashboard", admin_api.DashboardView.as_view()),
+    path("api/admin/employees", admin_api.EmployeeListView.as_view()),
+    path("api/admin/employees/<int:pk>", admin_api.EmployeeDetailView.as_view()),
     path("api/admin/assets", admin_api.AssetListView.as_view()),
     path("api/admin/assets/<str:asset_id>", admin_api.AssetDetailView.as_view()),
     path("api/admin/assets/<str:asset_id>/reset-code", admin_api.AssetResetCodeView.as_view()),

@@ -15,11 +15,12 @@ from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import AppIcon, Asset, DailyUsage, InstalledApps, Setting, SoftwareRequest, WeekendAlert, ms
+from .models import AppIcon, Asset, DailyUsage, Employee, InstalledApps, Setting, SoftwareRequest, WeekendAlert, ms
 from .policy import DEFAULT_POLICY, normalize_policy
 from .software import close_open_requests
 
 ASSET_ID_RE = re.compile(r"^[A-Za-z0-9._-]{2,40}$")
+EMPLOYEE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 DEVICE_TYPES = {"Laptop", "Desktop", "Workstation", "Other"}
 
 
@@ -72,24 +73,25 @@ def clean_asset_fields(data, partial=False, existing=None):
             raise ValidationError(f"{label} is required")
         out[field] = value[:n]
 
-    text("employeeName", "employee_name", 120, required=True, label="Employee name")
-    if not (partial and "employeeEmail" not in data):
-        email = str(data.get("employeeEmail") or "").strip()
+    if data.get("employeeRef") not in (None, ""):
+        # An onboarded employee: name, email, department and reporting person all come from the employee record.
         try:
-            validate_email(email)
-        except ValidationError:
-            raise ValidationError("Enter a valid employee email address")
-        out["employee_email"] = email
-    text("department", "department", 120)
-    text("managerName", "manager_name", 120)
-    if not (partial and "managerEmail" not in data):
-        mgr = str(data.get("managerEmail") or "").strip()
-        if mgr:
+            emp = Employee.objects.select_related("manager").get(pk=int(data["employeeRef"]))
+        except (ValueError, TypeError, Employee.DoesNotExist):
+            raise ValidationError("Select an employee from the list")
+        if not emp.active and not (existing and existing.employee_id == emp.pk):
+            raise ValidationError(f"{emp.name} is inactive")
+        out["employee"] = emp
+    elif not (existing and existing.employee_id):
+        text("employeeName", "employee_name", 120, required=True, label="Employee name")
+        if not (partial and "employeeEmail" not in data):
+            email = str(data.get("employeeEmail") or "").strip()
             try:
-                validate_email(mgr)
+                validate_email(email)
             except ValidationError:
-                raise ValidationError("Enter a valid email address for the reporting person")
-        out["manager_email"] = mgr
+                raise ValidationError("Enter a valid employee email address")
+            out["employee_email"] = email
+        text("department", "department", 120)
     text("location", "location", 255)
     text("notes", "notes", 5000)
     if not (partial and "deviceType" not in data):
@@ -159,7 +161,10 @@ class AssetListView(APIView):
             fields = clean_asset_fields(request.data)
         except ValidationError as e:
             return Response({"error": e.messages[0]}, status=400)
+        emp = fields.pop("employee", None)
         asset = Asset(asset_id=asset_id, **fields)
+        if emp:
+            asset.apply_employee(emp)
         asset.issue_code()
         asset.save()
         return Response(asset.to_dict(), status=201)
@@ -182,11 +187,14 @@ class AssetDetailView(APIView):
     def patch(self, request, asset_id):
         asset = get_object_or_404(Asset, asset_id=asset_id)
         try:
-            fields = clean_asset_fields(request.data, partial=True)
+            fields = clean_asset_fields(request.data, partial=True, existing=asset)
         except ValidationError as e:
             return Response({"error": e.messages[0]}, status=400)
+        emp = fields.pop("employee", None)
         for k, v in fields.items():
             setattr(asset, k, v)
+        if emp:
+            asset.apply_employee(emp)
         asset.save()
         return Response(asset.to_dict())
 
@@ -202,6 +210,91 @@ class AssetResetCodeView(APIView):
         asset.save()
         close_open_requests(asset, f"admin:{request.user.get_username()}")  # nothing waiting may follow the asset to its next laptop
         return Response(asset.to_dict())
+
+
+# ---- employees -----------------------------------------------------------------------------
+
+def clean_employee_fields(data, existing=None):
+    """Validates onboarding input; returns model field values."""
+    def text(key, n, label=None, required=False):
+        value = str(data.get(key) or "").strip()
+        if required and not value:
+            raise ValidationError(f"{label} is required")
+        return value[:n]
+
+    employee_id = text("employeeId", 40, "Employee ID", required=True)
+    if not EMPLOYEE_ID_RE.match(employee_id):
+        raise ValidationError("Employee ID can use letters, numbers, dot, dash and underscore")
+    dup = Employee.objects.filter(employee_id__iexact=employee_id)
+    if existing:
+        dup = dup.exclude(pk=existing.pk)
+    if dup.exists():
+        raise ValidationError(f"Employee ID {employee_id} is already in use")
+    name = text("name", 120, "Name", required=True)
+    email = text("email", 254, "Email", required=True)
+    try:
+        validate_email(email)
+    except ValidationError:
+        raise ValidationError("Enter a valid employee email address")
+    dup = Employee.objects.filter(email__iexact=email)
+    if existing:
+        dup = dup.exclude(pk=existing.pk)
+    if dup.exists():
+        raise ValidationError(f"{email} is already onboarded")
+    manager = None
+    if data.get("managerId") not in (None, ""):
+        try:
+            manager = Employee.objects.get(pk=int(data["managerId"]))
+        except (ValueError, TypeError, Employee.DoesNotExist):
+            raise ValidationError("Select the reporting person from the list")
+        if existing:
+            node = manager
+            while node:  # a person cannot report to themselves or to someone below them
+                if node.pk == existing.pk:
+                    raise ValidationError("A person cannot report to themselves or to their own team")
+                node = node.manager
+    return {
+        "employee_id": employee_id, "name": name, "email": email, "manager": manager,
+        "department": text("department", 120), "designation": text("designation", 120),
+        "active": bool(data.get("active", True)),
+    }
+
+
+class EmployeeListView(APIView):
+    def get(self, request):
+        return Response([e.to_dict() for e in Employee.objects.select_related("manager").prefetch_related("assets", "reports")])
+
+    def post(self, request):
+        try:
+            emp = Employee.objects.create(**clean_employee_fields(request.data))
+        except ValidationError as e:
+            return Response({"error": e.messages[0]}, status=400)
+        return Response(emp.to_dict(), status=201)
+
+
+class EmployeeDetailView(APIView):
+    def patch(self, request, pk):
+        emp = get_object_or_404(Employee, pk=pk)
+        current = {"employeeId": emp.employee_id, "name": emp.name, "email": emp.email, "department": emp.department,
+                   "designation": emp.designation, "managerId": emp.manager_id, "active": emp.active}
+        try:
+            fields = clean_employee_fields({**current, **request.data}, existing=emp)
+        except ValidationError as e:
+            return Response({"error": e.messages[0]}, status=400)
+        for k, v in fields.items():
+            setattr(emp, k, v)
+        emp.save()
+        emp.sync_assets()
+        for report in emp.reports.all():  # their assets carry this person as the reporting person
+            report.sync_assets()
+        return Response(emp.to_dict())
+
+    def delete(self, request, pk):
+        emp = get_object_or_404(Employee, pk=pk)
+        if emp.assets.exists():
+            return Response({"error": f"{emp.name} still has an asset assigned. Reassign or delete the asset first."}, status=409)
+        emp.delete()
+        return Response(status=204)
 
 
 # ---- alerts ------------------------------------------------------------------------------

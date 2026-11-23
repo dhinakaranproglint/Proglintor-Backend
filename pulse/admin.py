@@ -1,7 +1,14 @@
 from django.contrib import admin
 
-from .models import (AppIcon, Asset, DailyUsage, InstalledApps, PasswordResetCode, Setting, SoftwareEvent, SoftwareItem,
+from .models import (AppIcon, Asset, Employee, DailyUsage, InstalledApps, PasswordResetCode, Setting, SoftwareEvent, SoftwareItem,
                      SoftwareRequest, WeekendAlert)
+
+
+@admin.register(Employee)
+class EmployeeAdmin(admin.ModelAdmin):
+    list_display = ("employee_id", "name", "email", "department", "manager", "active")
+    search_fields = ("employee_id", "name", "email")
+    list_filter = ("active", "department")
 
 
 @admin.register(Asset)

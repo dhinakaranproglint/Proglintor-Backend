@@ -24,10 +24,54 @@ def ms(dt):
     return int(dt.timestamp() * 1000) if dt else None
 
 
+class Employee(models.Model):
+    """A person onboarded by the admin. Assets are assigned to an employee; the reporting person lives here."""
+
+    employee_id = models.CharField("employee ID", max_length=40, unique=True)
+    name = models.CharField(max_length=120)
+    email = models.EmailField(unique=True)
+    department = models.CharField(max_length=120, blank=True)
+    designation = models.CharField(max_length=120, blank=True)
+    manager = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="reports", verbose_name="reporting person")
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "employee_id"]
+
+    def __str__(self):
+        return f"{self.name} ({self.employee_id})"
+
+    def sync_assets(self):
+        """Assets keep a copy of these fields (Orbit and the agent read them); refresh the copies."""
+        for a in self.assets.all():
+            a.apply_employee(self)
+            a.save()
+
+    def to_dict(self):
+        return {
+            "id": self.pk,
+            "employeeId": self.employee_id,
+            "name": self.name,
+            "email": self.email,
+            "department": self.department,
+            "designation": self.designation,
+            "managerId": self.manager_id,
+            "managerName": self.manager.name if self.manager else "",
+            "managerEmployeeId": self.manager.employee_id if self.manager else "",
+            "active": self.active,
+            "assetIds": list(self.assets.values_list("asset_id", flat=True)),
+            "reportsCount": self.reports.count(),
+            "createdAt": ms(self.created_at),
+        }
+
+
 class Asset(models.Model):
     """A company laptop/desktop assigned to an employee."""
 
     asset_id = models.CharField(primary_key=True, max_length=40)
+    employee = models.ForeignKey(Employee, null=True, blank=True, on_delete=models.SET_NULL, related_name="assets")
     employee_name = models.CharField(max_length=120)
     employee_email = models.EmailField()
     department = models.CharField(max_length=120, blank=True)
@@ -64,6 +108,15 @@ class Asset(models.Model):
 
     def __str__(self):
         return f"{self.asset_id} — {self.employee_name}"
+
+    def apply_employee(self, emp):
+        """Copy the onboarded employee's details (including the reporting person) onto this asset."""
+        self.employee = emp
+        self.employee_name = emp.name
+        self.employee_email = emp.email
+        self.department = emp.department
+        self.manager_name = emp.manager.name if emp.manager else ""
+        self.manager_email = emp.manager.email if emp.manager else ""
 
     # ---- enrollment ----
     def issue_code(self):
@@ -119,9 +172,12 @@ class Asset(models.Model):
         )
         return {
             "assetId": self.asset_id,
+            "employeeRef": self.employee_id,
+            "employeeCode": self.employee.employee_id if self.employee else "",
             "employeeName": self.employee_name,
             "employeeEmail": self.employee_email,
             "department": self.department,
+            "managerName": self.manager_name,
             "location": self.location,
             "deviceType": self.device_type,
             "notes": self.notes,
